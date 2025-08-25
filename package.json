@@ -1,0 +1,36 @@
+{
+  "name": "ai-urban-planner-crew",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:gateway\" \"npm run dev:orchestrator\"",
+    "dev:frontend": "npm run dev --workspace=@urban-planner/frontend",
+    "dev:gateway": "npm run start:dev --workspace=@urban-planner/gateway",
+    "dev:orchestrator": "cd apps/orchestrator && uvicorn main:app --reload --port 8000",
+    "build": "npm run build --workspaces",
+    "build:frontend": "npm run build --workspace=@urban-planner/frontend",
+    "build:gateway": "npm run build --workspace=@urban-planner/gateway",
+    "build:sdk": "npm run build --workspace=@urban-planner/sdk",
+    "lint": "npm run lint --workspaces",
+    "test": "npm run test --workspaces",
+    "docker:up": "docker-compose -f docker-compose.dev.yml up -d",
+    "docker:down": "docker-compose -f docker-compose.dev.yml down",
+    "docker:logs": "docker-compose -f docker-compose.dev.yml logs -f",
+    "setup": "npm install && npm run docker:up"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "typescript": "^5.2.0",
+    "eslint": "^8.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}

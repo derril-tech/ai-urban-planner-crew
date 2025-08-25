@@ -1,0 +1,411 @@
+# Created automatically by Cursor AI (2025-01-27)
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # Lint and Type Check
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: |
+          apps/frontend/package-lock.json
+          apps/gateway/package-lock.json
+          package-lock.json
+          
+    - name: Install dependencies
+      run: |
+        npm ci
+        cd apps/frontend && npm ci
+        cd ../gateway && npm ci
+        
+    - name: Lint frontend
+      run: |
+        cd apps/frontend
+        npm run lint
+        
+    - name: Type check frontend
+      run: |
+        cd apps/frontend
+        npm run type-check
+        
+    - name: Lint gateway
+      run: |
+        cd apps/gateway
+        npm run lint
+        
+    - name: Type check gateway
+      run: |
+        cd apps/gateway
+        npm run type-check
+
+  # Unit Tests
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgis/postgis:15-3.3
+        env:
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: test_urban_planner
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+          
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: |
+          apps/frontend/package-lock.json
+          apps/gateway/package-lock.json
+          package-lock.json
+          
+    - name: Install Python dependencies
+      run: |
+        cd apps/workers
+        pip install -r requirements.txt
+        
+    - name: Install Node.js dependencies
+      run: |
+        npm ci
+        cd apps/frontend && npm ci
+        cd ../gateway && npm ci
+        
+    - name: Run Python unit tests
+      run: |
+        cd apps/workers
+        python -m pytest tests/ -v --cov=src --cov-report=xml
+        
+    - name: Run frontend unit tests
+      run: |
+        cd apps/frontend
+        npm run test:unit
+        
+    - name: Run gateway unit tests
+      run: |
+        cd apps/gateway
+        npm run test:unit
+        
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        files: |
+          apps/workers/coverage.xml
+          apps/frontend/coverage/lcov.info
+          apps/gateway/coverage/lcov.info
+
+  # Security & SBOM
+  security:
+    name: Security & SBOM
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        npm ci
+        cd apps/frontend && npm ci
+        cd ../gateway && npm ci
+        cd ../workers && pip install -r requirements.txt
+        
+    - name: Run security audit (npm)
+      run: |
+        npm audit --audit-level=moderate
+        cd apps/frontend && npm audit --audit-level=moderate
+        cd ../gateway && npm audit --audit-level=moderate
+        
+    - name: Run security audit (Python)
+      run: |
+        cd apps/workers
+        pip install safety
+        safety check --json --output safety-report.json
+        
+    - name: Generate SBOM (Node.js)
+      uses: cyclonedx/cyclonedx-action-nodejs@v1
+      with:
+        path: apps/frontend
+        output-format: json
+        output-file: frontend-sbom.json
+        
+    - name: Generate SBOM (Python)
+      run: |
+        cd apps/workers
+        pip install cyclonedx-bom
+        cyclonedx-py -i requirements.txt -o workers-sbom.json
+        
+    - name: Upload SBOM artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: sbom-files
+        path: |
+          apps/frontend/frontend-sbom.json
+          apps/workers/workers-sbom.json
+          apps/workers/safety-report.json
+
+  # Docker Build
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: [lint, test, security]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha
+          
+    - name: Build and push Frontend
+      uses: docker/build-push-action@v5
+      with:
+        context: ./apps/frontend
+        push: true
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/frontend:${{ steps.meta.outputs.version }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        
+    - name: Build and push Gateway
+      uses: docker/build-push-action@v5
+      with:
+        context: ./apps/gateway
+        push: true
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/gateway:${{ steps.meta.outputs.version }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        
+    - name: Build and push Workers
+      uses: docker/build-push-action@v5
+      with:
+        context: ./apps/workers
+        push: true
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/workers:${{ steps.meta.outputs.version }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  # Migration Gate
+  migration-gate:
+    name: Migration Gate
+    runs-on: ubuntu-latest
+    needs: [test]
+    
+    services:
+      postgres:
+        image: postgis/postgis:15-3.3
+        env:
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: test_urban_planner
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+          
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        cd apps/workers
+        pip install -r requirements.txt
+        
+    - name: Run migration tests
+      run: |
+        cd apps/workers
+        python -m pytest tests/test_migrations.py -v
+        
+    - name: Validate migration files
+      run: |
+        cd apps/workers
+        python scripts/validate_migrations.py
+
+  # E2E Tests
+  e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    
+    services:
+      postgres:
+        image: postgis/postgis:15-3.3
+        env:
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: test_urban_planner
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+          
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+          
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: apps/frontend/package-lock.json
+        
+    - name: Install dependencies
+      run: |
+        cd apps/frontend
+        npm ci
+        
+    - name: Run E2E tests
+      run: |
+        cd apps/frontend
+        npm run test:e2e
+        
+    - name: Upload E2E test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: e2e-results
+        path: apps/frontend/test-results/
+
+  # Load Tests
+  load-test:
+    name: Load Tests
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup k6
+      uses: grafana/k6-action@v0.3.0
+      with:
+        filename: apps/frontend/k6-load-test.js
+        
+    - name: Run load tests
+      run: |
+        k6 run apps/frontend/k6-load-test.js
+
+  # Deploy to Staging
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [e2e, load-test]
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+    
+    steps:
+    - name: Deploy to staging
+      run: |
+        echo "Deploying to staging environment..."
+        # Add deployment logic here
+        
+    - name: Run smoke tests
+      run: |
+        echo "Running smoke tests on staging..."
+        # Add smoke test logic here
+
+  # Deploy to Production
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [e2e, load-test]
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    
+    steps:
+    - name: Deploy to production
+      run: |
+        echo "Deploying to production environment..."
+        # Add deployment logic here
+        
+    - name: Run smoke tests
+      run: |
+        echo "Running smoke tests on production..."
+        # Add smoke test logic here

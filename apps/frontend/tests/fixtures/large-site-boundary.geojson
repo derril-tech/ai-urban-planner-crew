@@ -1,0 +1,23 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Large Test Development Site",
+        "area_hectares": 15.0,
+        "description": "Large site boundary for performance testing"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [-122.4294, 37.7649],
+          [-122.4294, 37.7949],
+          [-122.3994, 37.7949],
+          [-122.3994, 37.7649],
+          [-122.4294, 37.7649]
+        ]]
+      }
+    }
+  ]
+}
